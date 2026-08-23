@@ -1,85 +1,89 @@
-# claude-session-repair
+# Claude Session Repair
 
-This is a basic Python application template. It provides support for logging and 
-yaml configuration file management.
+Repairs the Desktop "Code" tab sidebar bug where sessions synced or copied into `~/.claude/projects/` (e.g. via `claude-sync`, `rsync`, `tar`) don't appear in the sidebar.
 
-## Using this as a template
+Claude.app only shows sessions that have a matching `local_*.json` index entry under:
 
-Use the `pyutil/new_project.sh` script to clone a local copy of this template project. 
-The script will do a find-and-replace the two placeholders throughout:
-
-- `claude-session-repair` → your app's name (also the systemd service name).
-- `Repair Claude Code Desktop session history` → a one-line description.
-
-## Prerequisites
-
-- Python 3.13+ — `brew install python@3.13`
-- [uv](https://docs.astral.sh/uv/) — `brew install uv`
-
-`scripts/launch.sh` runs `uv sync` to install all dependencies into the virtual
-environment automatically.
-
-> **macOS note:** to let the app reach the local network, allow your terminal/IDE
-> under *System Settings > Privacy and Security > Local Network*.
-
-## Configuration
-
-Config lives in [configs/development.yaml](configs/development.yaml) and
-[configs/production.yaml](configs/production.yaml). Secrets are **not** stored in
-YAML — they come from environment variables (see the `.env` templates below).
-
-## Environment files
-
-The app loads a `.env` file (via `python-dotenv`). Two templates are provided
-(`.env.dev.template`, `.env.prod.template`) using 1Password `op://` references, plus
-`tests/.env.test.template` for the test suite. Copy/inject the appropriate one:
-
-```bash
-ln -s .env.dev.template .env.target
+```
+~/Library/Application Support/Claude/claude-code-sessions/<accountId>/<orgId>/
 ```
 
-## Running the app
+This tool reconstructs those index entries from the `.jsonl` transcript files already present in `~/.claude/projects/`.
 
-You can run it immediately by: 
+## Requirements
+
+- macOS
+- Python and [uv](https://github.com/astral-sh/uv)
+
+## Usage
+
+### 1. Quit Claude.app completely
+
+Use **Cmd-Q** and verify no background process lingers in Activity Monitor or the menu bar. The app may overwrite or ignore files written while it is running.
+
+### 2. Dry run (default — writes nothing)
 
 ```bash
 ./scripts/launch.sh
 ```
 
-This will select the relevant config file (using the APP_CONFIG environment variable), do a `uv sync` and then
-launch the app.
+Review the printed plan. Each orphaned transcript is shown alongside its reconstructed `cwd`. If any `cwd` looks wrong (see [Ambiguous CWD](#ambiguous-cwd) below), add an override before applying.
 
-## Development
-
-```bash
-uv sync --extra all          # install dev dependencies
-uv run ruff format src tests # format
-uv run ruff check src tests  # lint
-uv run mypy src              # type-check (strict)
-uv run pytest                # run the test suite
-```
-
-## Running via systemd
-
-To run automatically at boot (e.g. on a Raspberry Pi):
-
-### 1. Create a service file
+### 3. Apply
 
 ```bash
-sudo cp deploy/claude-session-repair.service /etc/systemd/system/claude-session-repair.service
-sudo nano /etc/systemd/system/claude-session-repair.service
+./scripts/launch.sh --apply
 ```
 
-### 2. Enable and start the service
+A zip backup of the existing index folder is taken automatically before writing unless `--no-backup` is passed.
+
+### 4. Relaunch Claude.app
+
+The repaired sessions will appear in the Code tab sidebar.
+
+## Options
+
+| Flag | Description |
+|---|---|
+| `--apply` | Write new index files (default is dry-run) |
+| `--no-backup` | Skip the zip backup before writing (not recommended) |
+| `--overrides <file>` | JSON file mapping slug → absolute cwd for ambiguous paths |
+
+## Ambiguous CWD
+
+Project slugs are the working directory path with `/` replaced by `-`. This is ambiguous when a real path component itself contains a hyphen (e.g. `dividend-extractor`), because the slug `-Users-nick-dev-dividend-extractor` could mean `/Users/nick/dev/dividend/extractor` or `/Users/nick/dev/dividend-extractor`.
+
+The tool resolves ambiguity with the following strategy (in order):
+
+1. **Overrides file** — always wins; see below.
+2. **Known roots heuristic** — if a known root directory name (`dev`, `scripts`, `Projects`, `Documents`, `Desktop`, `src`, `code`, etc.) appears in the slug, everything after it is treated as a single hyphenated leaf name.
+3. **Disk walk** — finds the deepest existing directory prefix on this machine and folds the remainder into one leaf name.
+4. **Naive split** — last resort; flagged as unconfirmed in the output.
+
+Slugs that could not be confirmed are printed as `AMBIGUOUS CWD` warnings in the dry-run output.
+
+## Creating an Overrides File
+
+If any `cwd` guess is wrong, create a JSON file that maps the slug (the project folder name under `~/.claude/projects/`) to the correct absolute path:
+
+```json
+{
+  "-Users-nick-dev-dividend-extractor": "/Users/nick/dev/dividend-extractor",
+  "-Users-nick-scripts-my-cool-project": "/Users/nick/scripts/my-cool-project"
+}
+```
+
+Then pass it with `--overrides`:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable claude-session-repair
-sudo systemctl start claude-session-repair
+./scripts/launch.sh --overrides overrides.json
+./scripts/launch.sh --overrides overrides.json --apply
 ```
 
-### 3. View logs
+The slug is printed in the `AMBIGUOUS CWD` warnings section of the dry-run output, so you can copy it directly from there.
 
-```bash
-journalctl -u claude-session-repair -f
-```
+## Safety
+
+- **Never modifies or deletes** existing `local_*.json` files — only adds new ones for transcripts that have no matching entry.
+- **Backs up** the entire account/org index folder to a `.zip` before writing anything (unless `--no-backup` is given).
+- **Dry-run by default** — nothing is written without `--apply`.
