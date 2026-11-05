@@ -1,6 +1,6 @@
 # Plan: rework into `sync-claude-code` (issue #1)
 
-Status: **Draft – awaiting approval**
+Status: **Approved – implemented**
 Branch: `issue-1-sync-claude-code`
 
 ## Goal
@@ -44,29 +44,36 @@ rebuilding it.
 
 ### Transport
 
-claude-sync can sync any path under `~/.claude` (`claude-sync paths add <path>`). We stage
-the desktop index into a folder there:
+claude-sync is configured with `scope: sessions`. Since claude-sync v1.17.0 that scope is
+a hard ceiling: custom sync paths outside `projects`, `history.jsonl`, `tasks` and `plans`
+are silently dropped. So `claude-sync paths add desktop-index` would not work. Instead we
+stage the desktop index **inside `projects/`**, which is already synced:
 
 ```
-~/.claude/desktop-index/
+~/.claude/projects/_desktop-index/
   <accountId>/<orgId>/
     manifest.json            # source host, timestamp, home dir, tool version, list of session IDs
     sessions/local_*.json    # verbatim copies of the source index files
     archived-sessions.idx
 ```
 
-The first `push` checks `claude-sync paths list` and runs `claude-sync paths add
-desktop-index` if needed. This is a one-time change to claude-sync's config, and the tool
-says so when it makes it.
+No claude-sync config change is needed. A side benefit: claude-sync rewrites home paths
+in `.json` files under `projects/` (`/Users/nick` ↔ `${HOME}`), so home remapping of
+`cwd` and similar fields comes for free. Our own remapping stays as a fallback for
+`archived-sessions.idx` and for any path claude-sync misses.
 
-The **manifest is the source of truth**, not the folder listing, because I haven't
-confirmed that claude-sync carries deletions across. If it doesn't, stale files in the
-staging folder are ignored because the manifest doesn't list them.
+Risks to check during real-machine verification: that Claude Code doesn't treat
+`_desktop-index` as a project or delete it in its old-transcript cleanup. The folder
+holds no `*.jsonl` files at its top level, which should keep it out of both.
+
+The **manifest is the source of truth**, not the folder listing. claude-sync `pull` only
+downloads and never deletes local files, so stale files in the staging folder will
+linger. They're ignored because the manifest doesn't list them.
 
 ### `push` (source)
 
 1. Find the account/org index folder or folders. Same logic as today, but configurable.
-2. Rebuild `~/.claude/desktop-index/` from scratch: copy the `local_*.json` files and
+2. Rebuild `~/.claude/projects/_desktop-index/` from scratch: copy the `local_*.json` files and
    `archived-sessions.idx`, then write `manifest.json`.
 3. Run `claude-sync push`, streaming its output.
 4. Print a summary: number of sessions exported and number of renamed titles.
@@ -112,11 +119,16 @@ For each target index folder that matches a source folder (matched by account an
    `pull --forge-orphans`, with fixes:
    - It skips IDs listed in any `priorCliSessionIds`.
    - It skips transcripts with no user or assistant messages.
-6. **Sanity check**: warn when a written entry's transcript isn't present under
-   `~/.claude/projects/`, which happens when claude-sync didn't bring it over.
+6. **Missing transcripts**: a source entry whose transcript isn't present under
+   `~/.claude/projects/` is **skipped and reported**, not written. Otherwise the sidebar
+   shows a row that opens onto "Session not found on disk". This happens when claude-sync
+   didn't bring the transcript over. Running `pull` again after a fuller sync adds it.
 
 Entries are written whole, as JSON. The app's schema has about 70 fields and keeps
 changing, so we copy and never edit any field except the remapped paths.
+
+Writes are **atomic** (temp file, then rename), and the tool **refuses to write through a
+symlink**. Both lessons come from the review of claude-sync PR #84.
 
 ### Out of scope for this PR (phase 2 candidates)
 
@@ -150,7 +162,7 @@ configs/
   docstrings throughout.
 - `merge.py` is pure, with no I/O, so it can be unit-tested thoroughly.
 - `status` reads only. It shows the index folder, the session count and the time of the
-  last push or pull, and whether `desktop-index` is registered with claude-sync.
+  last push or pull, and claude-sync's version and scope.
 
 ## Tests (pytest)
 
@@ -166,8 +178,9 @@ configs/
 - `export.py`: the manifest is correct and the staging folder is rebuilt cleanly. Tests use
   `tmp_path`.
 - `apply.py`: the backup contains every file, and a dry run writes nothing.
-- `claude_sync.py`: subprocess is mocked to cover a missing binary, a non-zero exit, and
-  a `paths add` that's already registered.
+- `claude_sync.py`: subprocess is mocked to cover a missing binary and a non-zero exit.
+- `merge.py` / `apply.py`: an entry with a missing transcript is skipped and reported; a
+  symlinked destination is refused.
 - CLI: refuses to `pull` while Claude.app is running (`pgrep` mocked).
 
 ## Docs
@@ -190,6 +203,13 @@ the desktop:
    **Unknown:** whether the app also caches sidebar data elsewhere (for example
    `IndexedDB`), which would make the laptop show stale data. This step will tell us.
 
+## Upstream status (checked 2026-11-05)
+
+claude-sync v1.17.2 has no desktop-index support. Three open PRs add some (#77, #84, #86),
+but they're on hold (see issue #91). None of them de-duplicates via `priorCliSessionIds`,
+and none syncs sidebar sections or pins. So we build our own. If one of them lands later,
+`push`/`pull` must not fight it; we'll revisit then.
+
 ## Open questions
 
 1. **Target-only sessions.** Should they be kept by default, with `--mirror` to remove
@@ -209,3 +229,24 @@ the desktop:
 4. **Sidebar sections and pins.** Should they be in this PR or left for phase 2?
 
    > In this PR - let's go for it! 
+
+## Implementation notes (changes from the plan above)
+
+- **Newer target kept.** If the target's record for the same `sessionId` has a later
+  `lastActivityAt` than the staged copy, the target's record is kept. This stops a pull from
+  rolling back a session that was continued on this machine after the last push.
+- **Index folder matching.** An exact `<accountId>/<orgId>` match is used first, then a
+  unique match on `orgId` alone, in case the account segment differs between machines.
+- **Dry run while Claude.app is open.** `pull --dry-run` warns instead of refusing, since it
+  writes nothing. A real `pull` still refuses.
+- **App detection.** The tool uses `ps` and matches `*.app/Contents/MacOS/Claude`. `pgrep -x
+  Claude` missed the main process when run from a terminal inside Claude.app.
+- **`--forge-orphans`** reads `cwd` from the transcript instead of guessing it from the
+  folder slug, and derives a stable `sessionId` from the transcript ID (UUIDv5).
+- **Sidebar keys carried:** `starred-local-code-sessions`, `starred-session-groups`,
+  `dframe-local-slice` (pins), `dframe-group-scopes`, and this org's entry in
+  `dframe-code-sections`. Other `epitaxyPrefs` keys are machine-specific and left alone.
+- **Backups** go to `~/Library/Application Support/sync-claude-code/backups/` rather than
+  into the app's index folder.
+- **Repo folder rename.** The local checkout folder is not renamed by the tool's PR. The
+  remote repo is renamed, and GitHub redirects the old URL.

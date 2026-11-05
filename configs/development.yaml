@@ -1,0 +1,35 @@
+# Development configuration for sync-claude-code.
+
+General:
+  AppName: sync-claude-code
+
+Paths:
+  # Claude Code's data folder; claude-sync syncs parts of it.
+  ClaudeDir: ~/.claude
+  # The Claude desktop app's support folder (holds claude-code-sessions/ and claude_desktop_config.json).
+  AppSupportDir: ~/Library/Application Support/Claude
+  # Where push stages the sidebar index. Must be under ClaudeDir/projects so a
+  # claude-sync "sessions" scope carries it.
+  StagingDir: ~/.claude/projects/_desktop-index
+  # Where pull writes its zip backups before changing anything.
+  BackupDir: ~/Library/Application Support/sync-claude-code/backups
+
+ClaudeSync:
+  Binary: claude-sync
+  # Run claude-sync push/pull as part of push/pull.
+  RunSync: true
+  # After claude-sync pull, resolve any conflicts in favour of the remote (the source machine).
+  AutoResolveConflicts: true
+
+Pull:
+  # Delete sessions that exist only on this machine (exact mirror). Overridden by --mirror.
+  Mirror: false
+  # Merge sidebar sections, pins and stars from claude_desktop_config.json.
+  SyncSidebar: true
+
+Files:
+  LogfileName: logs/logfile.log
+  LogfileMaxLines: 10000
+  LogProcessID: false
+  LogfileVerbosity: debug
+  ConsoleVerbosity: summary

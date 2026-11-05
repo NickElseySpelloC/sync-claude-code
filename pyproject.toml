@@ -1,21 +1,24 @@
 [project]
-name = "claude-session-repair"
-version = "0.1.0"
-description = "Repair Claude Code Desktop session history"
+name = "sync-claude-code"
+version = "1.0.0"
+description = "Mirror the Claude desktop app's Code-tab sidebar between Macs, alongside claude-sync"
 requires-python = ">=3.13"
-service_name="claude-session-repair"
+service_name="sync-claude-code"
 launch_path="src/main.py"
 dependencies = [
     "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
     "sc-foundation-services>=3.3.0",
 ]
 
 [project.optional-dependencies]
 all = [
+    "mypy>=2.4.1",
     "pre-commit>=4.6.1",
     "pytest>=9.1.1",
     "pytest-dotenv>=0.5.2",
     "pytest-mock>=3.15.1",
+    "types-pyyaml>=6.0.12.20261103",
 ]
 
 [tool.setuptools]
@@ -27,4 +30,13 @@ zip-safe = false
 where = ["src"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["sc_foundation", "sc_foundation.*"]
+ignore_missing_imports = true
