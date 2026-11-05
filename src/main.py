@@ -300,6 +300,8 @@ def cmd_pull(args: argparse.Namespace, config: SCConfigManager, logger: SCLogger
         report = run_pull(paths, options)
     except PullError as e:
         log(str(e), "error")
+        if not run_sync:
+            log("claude-sync pull wasn't run (dry run or --no-sync). Run 'claude-sync pull' first, then try again.", "summary")
         return 1
 
     _log_report(report, args.dry_run, log)
