@@ -1,4 +1,4 @@
-# claude-session-repair pytest initializer.
+# sync-claude-code pytest initializer.
 import subprocess  # noqa: S404
 from pathlib import Path
 

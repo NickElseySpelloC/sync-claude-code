@@ -1,1 +1,1 @@
-"""claude-session-repair pytest initializer."""
+"""sync-claude-code pytest initializer."""

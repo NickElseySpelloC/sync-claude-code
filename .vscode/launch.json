@@ -12,7 +12,7 @@
             "program": "src/main.py",
             "console": "integratedTerminal",
             "envFile": "${workspaceFolder}/.env",
-            "args": ["--config", "configs/development.yaml"]
+            "args": ["pull", "--dry-run", "--config", "configs/development.yaml"]
         }
     ]
 }

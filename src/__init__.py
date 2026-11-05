@@ -1,1 +1,1 @@
-"""claude-session-repair package initializer."""
+"""sync-claude-code package initializer."""

@@ -1,89 +1,134 @@
-# Claude Session Repair
+# sync-claude-code
 
-Repairs the Desktop "Code" tab sidebar bug where sessions synced or copied into `~/.claude/projects/` (e.g. via `claude-sync`, `rsync`, `tar`) don't appear in the sidebar.
+Makes the Claude desktop app's **Code tab** look the same on two Macs: the same sessions, the same titles (including manual renames), the same archived state, the same sidebar sections, pins and stars, and no duplicates.
 
-Claude.app only shows sessions that have a matching `local_*.json` index entry under:
+It works alongside [claude-sync](https://github.com/tawanorg/claude-sync). claude-sync carries the transcripts in `~/.claude`. This tool carries the desktop app's sidebar index, which claude-sync doesn't sync.
 
+```bash
+# on the source Mac
+./scripts/launch.sh push
+
+# on the target Mac, with Claude.app quit, run from Terminal
+./scripts/launch.sh pull
 ```
-~/Library/Application Support/Claude/claude-code-sessions/<accountId>/<orgId>/
-```
 
-This tool reconstructs those index entries from the `.jsonl` transcript files already present in `~/.claude/projects/`.
+Either Mac can be the source. The last `push` wins.
+
+## Why it's needed
+
+The desktop app doesn't build its sidebar from `~/.claude/projects`. It keeps its own index:
+
+| Data | Where it lives |
+|---|---|
+| Transcripts | `~/.claude/projects/<slug>/<cliSessionId>.jsonl`, synced by claude-sync |
+| One record per sidebar session: title, `titleSource`, `cliSessionId`, `priorCliSessionIds`, cwd, … | `~/Library/Application Support/Claude/claude-code-sessions/<accountId>/<orgId>/local_*.json` |
+| Archived sessions | the same folder, `archived-sessions.idx` |
+| Sidebar sections, pins, stars | `~/Library/Application Support/Claude/claude_desktop_config.json` → `preferences.epitaxyPrefs` |
+
+Without this tool, synced transcripts don't appear in the sidebar on the other Mac. The old version of this repo (`claude-session-repair`) rebuilt the records from the transcripts. That lost manual renames and created duplicates, because one sidebar session can span several transcripts (`priorCliSessionIds`).
+
+## How it works
+
+- **`push`** copies the index records, the archive list, and the sidebar settings into `~/.claude/projects/_desktop-index/`, writes a `manifest.json`, then runs `claude-sync push`. The folder sits under `projects/` because claude-sync's `sessions` scope only syncs `projects`, `history.jsonl`, `tasks` and `plans`. Any other custom path is silently dropped.
+- **`pull`** runs `claude-sync pull` and `claude-sync conflicts --keep remote`, backs up the local index to a zip, then merges:
+  - Source sessions are written under their own `sessionId`, so IDs are stable on every machine.
+  - Local entries that duplicate a source session are deleted: a different `sessionId` whose `cliSessionId` or `priorCliSessionIds` overlap it. This cleans up copies left by the old repair tool.
+  - Sessions that exist only on this Mac are kept, unless you pass `--mirror`.
+  - A source session whose transcript hasn't arrived yet is skipped and reported, so the sidebar never shows "Session not found on disk". Run `pull` again once claude-sync has the transcript.
+  - If a session has newer activity on this Mac than in the staged copy, the local copy is kept.
+  - Sidebar sections, pins and stars come from the source. Pins and stars for kept local-only sessions are preserved. Machine-specific settings in `claude_desktop_config.json` are left alone.
+
+The manifest, not the folder listing, decides what's staged. claude-sync never deletes local files on pull, so files from older pushes may linger, and they're ignored.
 
 ## Requirements
 
-- macOS
-- Python and [uv](https://github.com/astral-sh/uv)
+- macOS, with the Claude desktop app run at least once on each Mac while signed in to the same account
+- Python 3.13+ and [uv](https://github.com/astral-sh/uv)
+- [claude-sync](https://github.com/tawanorg/claude-sync) set up on both Macs
+
+## Setup
+
+```bash
+ln -s .env.dev.template .env.target
+```
+
+No claude-sync configuration change is needed.
 
 ## Usage
 
-### 1. Quit Claude.app completely
-
-Use **Cmd-Q** and verify no background process lingers in Activity Monitor or the menu bar. The app may overwrite or ignore files written while it is running.
-
-### 2. Dry run (default — writes nothing)
-
-```bash
-./scripts/launch.sh
-```
-
-Review the printed plan. Each orphaned transcript is shown alongside its reconstructed `cwd`. If any `cwd` looks wrong (see [Ambiguous CWD](#ambiguous-cwd) below), add an override before applying.
-
-### 3. Apply
-
-```bash
-./scripts/launch.sh --apply
-```
-
-A zip backup of the existing index folder is taken automatically before writing unless `--no-backup` is passed.
-
-### 4. Relaunch Claude.app
-
-The repaired sessions will appear in the Code tab sidebar.
-
-## Options
-
-| Flag | Description |
+| Command | What it does |
 |---|---|
-| `--apply` | Write new index files (default is dry-run) |
-| `--no-backup` | Skip the zip backup before writing (not recommended) |
-| `--overrides <file>` | JSON file mapping slug → absolute cwd for ambiguous paths |
+| `push` | Stage this Mac's index and run `claude-sync push` |
+| `push --no-sync` | Stage only |
+| `pull --dry-run` | Show what would change. Writes nothing and doesn't run claude-sync. Fine while Claude.app is open |
+| `pull` | Run `claude-sync pull`, back up, and merge. **Refuses to run while Claude.app is open** |
+| `pull --mirror` | Also delete sessions that exist only on this Mac |
+| `pull --no-sync` | Skip `claude-sync pull` (use what's already staged) |
+| `pull --no-sidebar` | Leave sidebar sections, pins and stars alone |
+| `pull --forge-orphans` | Create entries for transcripts that no session points at (see below) |
+| `status` | Show the local index, the staged index, the last pull, claude-sync's version and scope, and whether Claude.app is running |
 
-## Ambiguous CWD
-
-Project slugs are the working directory path with `/` replaced by `-`. This is ambiguous when a real path component itself contains a hyphen (e.g. `dividend-extractor`), because the slug `-Users-nick-dev-dividend-extractor` could mean `/Users/nick/dev/dividend/extractor` or `/Users/nick/dev/dividend-extractor`.
-
-The tool resolves ambiguity with the following strategy (in order):
-
-1. **Overrides file** — always wins; see below.
-2. **Known roots heuristic** — if a known root directory name (`dev`, `scripts`, `Projects`, `Documents`, `Desktop`, `src`, `code`, etc.) appears in the slug, everything after it is treated as a single hyphenated leaf name.
-3. **Disk walk** — finds the deepest existing directory prefix on this machine and folds the remainder into one leaf name.
-4. **Naive split** — last resort; flagged as unconfirmed in the output.
-
-Slugs that could not be confirmed are printed as `AMBIGUOUS CWD` warnings in the dry-run output.
-
-## Creating an Overrides File
-
-If any `cwd` guess is wrong, create a JSON file that maps the slug (the project folder name under `~/.claude/projects/`) to the correct absolute path:
-
-```json
-{
-  "-Users-nick-dev-dividend-extractor": "/Users/nick/dev/dividend-extractor",
-  "-Users-nick-scripts-my-cool-project": "/Users/nick/scripts/my-cool-project"
-}
-```
-
-Then pass it with `--overrides`:
+`launch.sh` passes `--config` from `APP_CONFIG`. To run the app directly:
 
 ```bash
-./scripts/launch.sh --overrides overrides.json
-./scripts/launch.sh --overrides overrides.json --apply
+uv run src/main.py pull --dry-run --config configs/development.yaml
 ```
 
-The slug is printed in the `AMBIGUOUS CWD` warnings section of the dry-run output, so you can copy it directly from there.
+### Running pull
 
-## Safety
+1. Quit Claude.app with **Cmd-Q**. It keeps the index in memory and can overwrite changes when it quits.
+2. Run `pull` from Terminal.app, not from a terminal inside Claude.app.
+3. Start Claude.app.
 
-- **Never modifies or deletes** existing `local_*.json` files — only adds new ones for transcripts that have no matching entry.
-- **Backs up** the entire account/org index folder to a `.zip` before writing anything (unless `--no-backup` is given).
-- **Dry-run by default** — nothing is written without `--apply`.
+### Orphaned transcripts
+
+Transcripts with no index entry on either Mac are usually terminal CLI sessions, so they don't appear in the source's sidebar either and aren't added by default. `--forge-orphans` creates entries for them with the old tool's fixes:
+
+- It skips transcripts that are earlier parts of an existing session.
+- It skips transcripts with no messages.
+- It reads the working folder from the transcript.
+- It uses a stable `sessionId`, so running it again never adds a second entry.
+
+## Configuration
+
+`configs/development.yaml`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Paths.ClaudeDir` | `~/.claude` | Claude Code's data folder |
+| `Paths.AppSupportDir` | `~/Library/Application Support/Claude` | The desktop app's folder |
+| `Paths.StagingDir` | `~/.claude/projects/_desktop-index` | Staging folder. Must be under `ClaudeDir`, and under `projects/` for claude-sync's `sessions` scope |
+| `Paths.BackupDir` | `~/Library/Application Support/sync-claude-code/backups` | Zip backups |
+| `ClaudeSync.Binary` | `claude-sync` | claude-sync executable |
+| `ClaudeSync.RunSync` | `true` | Run claude-sync as part of push and pull |
+| `ClaudeSync.AutoResolveConflicts` | `true` | Run `claude-sync conflicts --keep remote` after pulling |
+| `Pull.Mirror` | `false` | Default for `--mirror` |
+| `Pull.SyncSidebar` | `true` | Merge sidebar sections, pins and stars |
+
+## Safety and rollback
+
+- `pull` zips every index file and `claude_desktop_config.json` into `BackupDir` before changing anything.
+- Writes are atomic (temp file, then rename), and the tool refuses to write through symlinks. Session IDs are validated before they're used as file names.
+- `push` only reads the desktop app's files. It deletes and rebuilds only its own staging folder, which it marks with a `.sync-claude-code` file.
+
+To roll back, quit Claude.app and unzip the latest backup:
+
+```bash
+cd ~/Library/Application\ Support/sync-claude-code/backups && ls -t | head -3
+```
+
+The zip holds `claude-code-sessions/<accountId>/<orgId>/…` and `claude_desktop_config.json`. Extract them over `~/Library/Application Support/Claude/`. Delete any `local_*.json` files the pull added first, or extract into an emptied index folder.
+
+## Not covered
+
+- `scheduled-tasks.json`, `side-session-notes/` and `git-worktrees.json`
+- Worktree checkouts. A session whose `worktreePath` doesn't exist on this Mac still appears, but it can't be resumed in that worktree.
+
+## Development
+
+```bash
+uv sync --extra all
+uv run pytest
+uv run mypy --strict src
+ruff check .
+```
