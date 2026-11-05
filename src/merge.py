@@ -15,11 +15,37 @@ Rules (see design/sync-claude-code-plan.md):
 5. A target record with the same ``sessionId`` but more recent activity is kept,
    so a session continued on this machine isn't rolled back.
 6. Archived state follows whichever side's record is kept.
+7. Per-machine view state (``lastFocusedAt``) keeps the later of the two values,
+   so clicking into a session on this machine doesn't make every pull rewrite it.
 """
 
 from dataclasses import dataclass, field
 
 from index import Record, activity, cli_ids
+
+# Timestamps that record what this machine's UI did, not what happened in the session.
+VIEW_STATE_FIELDS = ("lastFocusedAt",)
+
+
+def keep_local_view_state(source: Record, target: Record) -> Record:
+    """Carry the later of each view-state timestamp into the source record.
+
+    Args:
+        source: The source record about to replace ``target``.
+        target: The target's existing record with the same ``sessionId``.
+
+    Returns:
+        The source record, copied if any field changed.
+    """
+    out = source
+    for key in VIEW_STATE_FIELDS:
+        tgt_val = target.get(key)
+        src_val = source.get(key)
+        if isinstance(tgt_val, (int, float)) and (not isinstance(src_val, (int, float)) or tgt_val > src_val):
+            if out is source:
+                out = dict(source)
+            out[key] = tgt_val
+    return out
 
 
 @dataclass
@@ -120,11 +146,13 @@ def merge(
         if sid not in target:
             plan.added.append(sid)
             plan.writes[sid] = rec
-        elif target[sid] != rec:
-            plan.updated.append(sid)
-            plan.writes[sid] = rec
         else:
-            plan.unchanged.append(sid)
+            rec = keep_local_view_state(rec, target[sid])
+            if target[sid] != rec:
+                plan.updated.append(sid)
+                plan.writes[sid] = rec
+            else:
+                plan.unchanged.append(sid)
 
     for t in sorted(target):
         if t in touched or t in plan.duplicates:

@@ -112,3 +112,27 @@ def test_running_twice_changes_nothing():
     after = {k: v for k, v in {**target, **first.writes}.items() if k not in first.deletes}
     second = merge(source, [sid(2)], after, first.archived, transcripts)
     assert not second.has_changes
+
+
+def test_later_local_focus_alone_is_unchanged():
+    source = {sid(1): rec(1, lastFocusedAt=100)}
+    target = {sid(1): rec(1, lastFocusedAt=900)}
+    plan = merge(source, [], target, [], all_transcripts(1))
+    assert plan.unchanged == [sid(1)]
+    assert not plan.has_changes
+
+
+def test_real_change_keeps_later_local_focus():
+    source = {sid(1): rec(1, title="Renamed", lastFocusedAt=100)}
+    target = {sid(1): rec(1, title="old", lastFocusedAt=900)}
+    plan = merge(source, [], target, [], all_transcripts(1))
+    assert plan.writes[sid(1)]["title"] == "Renamed"
+    assert plan.writes[sid(1)]["lastFocusedAt"] == 900
+    assert source[sid(1)]["lastFocusedAt"] == 100  # input not mutated
+
+
+def test_later_source_focus_wins():
+    source = {sid(1): rec(1, title="Renamed", lastFocusedAt=900)}
+    target = {sid(1): rec(1, lastFocusedAt=100)}
+    plan = merge(source, [], target, [], all_transcripts(1))
+    assert plan.writes[sid(1)]["lastFocusedAt"] == 900
